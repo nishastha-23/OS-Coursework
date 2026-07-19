@@ -1,5 +1,5 @@
 /* ST5004CEM - Task 3: Secure File Management System
- * Stage 3: Permission System (Owner / Group / Others)
+ * Stage 4: Encryption / Decryption (XOR cipher)
  *
  * Compile: gcc -o task3 task3.c
  * Run:     ./task3
@@ -23,7 +23,8 @@ typedef struct {
     char filename[100];
     char owner[50];
     char group[30];
-    char perms[10];   /* e.g. "rwxr-x---" : owner | group | others */
+    char perms[10];
+    int  encrypted;
 } FileMeta;
 
 User users[MAX_USERS];
@@ -70,11 +71,12 @@ void load_files(void) {
     if (!f) return;
     file_count = 0;
     while (file_count < MAX_FILES &&
-           fscanf(f, "%99[^:]:%49[^:]:%29[^:]:%9[^\n]\n",
+           fscanf(f, "%99[^:]:%49[^:]:%29[^:]:%9[^:]:%d\n",
                   files[file_count].filename,
                   files[file_count].owner,
                   files[file_count].group,
-                  files[file_count].perms) == 4) {
+                  files[file_count].perms,
+                  &files[file_count].encrypted) == 5) {
         file_count++;
     }
     fclose(f);
@@ -84,8 +86,9 @@ void save_files(void) {
     FILE *f = fopen("files.meta", "w");
     if (!f) return;
     for (int i = 0; i < file_count; i++) {
-        fprintf(f, "%s:%s:%s:%s\n", files[i].filename, files[i].owner,
-                files[i].group, files[i].perms);
+        fprintf(f, "%s:%s:%s:%s:%d\n",
+                files[i].filename, files[i].owner, files[i].group,
+                files[i].perms, files[i].encrypted);
     }
     fclose(f);
 }
@@ -137,7 +140,6 @@ int login_user(void) {
     return 0;
 }
 
-/* perms layout: index 0-2 = owner rwx, 3-5 = group rwx, 6-8 = others rwx */
 int check_permission(FileMeta *fm, char op) {
     int offset;
     if (strcmp(fm->owner, current_user->username) == 0) {
@@ -148,8 +150,7 @@ int check_permission(FileMeta *fm, char op) {
         offset = 6;
     }
     int pos = (op == 'r') ? 0 : (op == 'w') ? 1 : 2;
-    char needed = op;
-    return fm->perms[offset + pos] == needed;
+    return fm->perms[offset + pos] == op;
 }
 
 FileMeta *find_file(const char *filename) {
@@ -159,6 +160,26 @@ FileMeta *find_file(const char *filename) {
     return NULL;
 }
 
+void xor_encrypt_decrypt(char *filepath, const char *key) {
+    FILE *f = fopen(filepath, "rb");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    unsigned char *data = malloc(size);
+    fread(data, 1, size, f);
+    fclose(f);
+
+    int klen = strlen(key);
+    for (long i = 0; i < size; i++) {
+        data[i] ^= key[i % klen];
+    }
+
+    f = fopen(filepath, "wb");
+    fwrite(data, 1, size, f);
+    fclose(f);
+    free(data);
+}
 void create_file_op(void) {
     if (file_count >= MAX_FILES) { printf("File limit reached.\n"); return; }
     char filename[100], perms[10];
@@ -184,6 +205,7 @@ void create_file_op(void) {
     strcpy(files[file_count].owner, current_user->username);
     strcpy(files[file_count].group, current_user->group);
     strcpy(files[file_count].perms, perms);
+    files[file_count].encrypted = 0;
     file_count++;
     save_files();
 
@@ -197,6 +219,7 @@ void write_file_op(void) {
     FileMeta *fm = find_file(filename);
     if (!fm) { printf("File not found.\n"); return; }
     if (!check_permission(fm, 'w')) { printf("PERMISSION DENIED: no write access.\n"); return; }
+    if (fm->encrypted) { printf("File is encrypted. Decrypt it first before writing.\n"); return; }
 
     char content[1000];
     printf("Enter content to write (single line): ");
@@ -219,6 +242,7 @@ void read_file_op(void) {
     FileMeta *fm = find_file(filename);
     if (!fm) { printf("File not found.\n"); return; }
     if (!check_permission(fm, 'r')) { printf("PERMISSION DENIED: no read access.\n"); return; }
+    if (fm->encrypted) { printf("File is encrypted. Decrypt it first to read plaintext.\n"); return; }
 
     char filepath[150];
     snprintf(filepath, sizeof(filepath), "%s/%s", VAULT_DIR, filename);
@@ -270,11 +294,54 @@ void chmod_file_op(void) {
     printf("Permissions updated to '%s'.\n", perms);
 }
 
+void encrypt_file_op(void) {
+    char filename[100], key[50];
+    printf("Filename: ");
+    scanf("%99s", filename);
+    FileMeta *fm = find_file(filename);
+    if (!fm) { printf("File not found.\n"); return; }
+    if (!check_permission(fm, 'w')) { printf("PERMISSION DENIED.\n"); return; }
+    if (fm->encrypted) { printf("File is already encrypted.\n"); return; }
+
+    printf("Encryption key: ");
+    scanf("%49s", key);
+
+    char filepath[150];
+    snprintf(filepath, sizeof(filepath), "%s/%s", VAULT_DIR, filename);
+    xor_encrypt_decrypt(filepath, key);
+    fm->encrypted = 1;
+    save_files();
+
+    printf("File '%s' encrypted.\n", filename);
+}
+
+void decrypt_file_op(void) {
+    char filename[100], key[50];
+    printf("Filename: ");
+    scanf("%99s", filename);
+    FileMeta *fm = find_file(filename);
+    if (!fm) { printf("File not found.\n"); return; }
+    if (!check_permission(fm, 'w')) { printf("PERMISSION DENIED.\n"); return; }
+    if (!fm->encrypted) { printf("File is not encrypted.\n"); return; }
+
+    printf("Decryption key: ");
+    scanf("%49s", key);
+
+    char filepath[150];
+    snprintf(filepath, sizeof(filepath), "%s/%s", VAULT_DIR, filename);
+    xor_encrypt_decrypt(filepath, key);
+    fm->encrypted = 0;
+    save_files();
+
+    printf("File '%s' decrypted (if the key was correct, it is now readable).\n", filename);
+}
+
 void list_files(void) {
-    printf("\n%-20s %-12s %-10s %-12s\n", "Filename", "Owner", "Group", "Permissions");
+    printf("\n%-20s %-12s %-10s %-12s %-10s\n", "Filename", "Owner", "Group", "Permissions", "Encrypted");
     for (int i = 0; i < file_count; i++) {
-        printf("%-20s %-12s %-10s %-12s\n", files[i].filename, files[i].owner,
-               files[i].group, files[i].perms);
+        printf("%-20s %-12s %-10s %-12s %-10s\n",
+               files[i].filename, files[i].owner, files[i].group,
+               files[i].perms, files[i].encrypted ? "yes" : "no");
     }
     printf("\n");
 }
@@ -286,7 +353,7 @@ int main(void) {
 
     printf("###############################################################\n");
     printf("# ST5004CEM Task 3 - Secure File Management System            #\n");
-    printf("# Stage 3: Permission System                                  #\n");
+    printf("# Stage 4: Encryption                                         #\n");
     printf("###############################################################\n");
 
     while (!current_user) {
@@ -302,7 +369,7 @@ int main(void) {
     do {
         printf("\n===== MENU (logged in as %s) =====\n", current_user->username);
         printf("1. Create file\n2. Write to file\n3. Read file\n4. Delete file\n");
-        printf("5. Change permissions\n6. List files\n0. Exit\n");
+        printf("5. Change permissions\n6. Encrypt file\n7. Decrypt file\n8. List files\n0. Exit\n");
         printf("Choice: ");
         scanf("%d", &choice);
 
@@ -312,7 +379,9 @@ int main(void) {
             case 3: read_file_op(); break;
             case 4: delete_file_op(); break;
             case 5: chmod_file_op(); break;
-            case 6: list_files(); break;
+            case 6: encrypt_file_op(); break;
+            case 7: decrypt_file_op(); break;
+            case 8: list_files(); break;
             case 0: printf("Logging out. Goodbye.\n"); break;
             default: printf("Invalid choice.\n");
         }
