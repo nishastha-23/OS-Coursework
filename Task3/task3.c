@@ -1,5 +1,5 @@
 /* ST5004CEM - Task 3: Secure File Management System
- * Stage 1: User Authentication (Register / Login)
+ * Stage 2: File Create / Read / Write / Delete
  *
  * Compile: gcc -o task3 task3.c
  * Run:     ./task3
@@ -10,6 +10,8 @@
 #include <string.h>
 
 #define MAX_USERS   20
+#define MAX_FILES   50
+#define VAULT_DIR   "vault"
 
 typedef struct {
     char username[50];
@@ -17,15 +19,20 @@ typedef struct {
     char group[30];
 } User;
 
+typedef struct {
+    char filename[100];
+    char owner[50];
+    char group[30];
+} FileMeta;
+
 User users[MAX_USERS];
 int user_count = 0;
 
+FileMeta files[MAX_FILES];
+int file_count = 0;
+
 User *current_user = NULL;
 
-/* NOTE: this is a basic additive hash for demonstration purposes only.
- * A real system should use a proper algorithm (e.g. bcrypt, SHA-256 with
- * salting) - this limitation will be discussed in the security analysis
- * report as a known weakness of this design. */
 void hash_password(const char *password, char *out_hash) {
     unsigned long hash = 5381;
     for (int i = 0; password[i] != '\0'; i++) {
@@ -53,6 +60,29 @@ void save_users(void) {
     if (!f) return;
     for (int i = 0; i < user_count; i++) {
         fprintf(f, "%s:%s:%s\n", users[i].username, users[i].passhash, users[i].group);
+    }
+    fclose(f);
+}
+
+void load_files(void) {
+    FILE *f = fopen("files.meta", "r");
+    if (!f) return;
+    file_count = 0;
+    while (file_count < MAX_FILES &&
+           fscanf(f, "%99[^:]:%49[^:]:%29[^\n]\n",
+                  files[file_count].filename,
+                  files[file_count].owner,
+                  files[file_count].group) == 3) {
+        file_count++;
+    }
+    fclose(f);
+}
+
+void save_files(void) {
+    FILE *f = fopen("files.meta", "w");
+    if (!f) return;
+    for (int i = 0; i < file_count; i++) {
+        fprintf(f, "%s:%s:%s\n", files[i].filename, files[i].owner, files[i].group);
     }
     fclose(f);
 }
@@ -104,12 +134,111 @@ int login_user(void) {
     return 0;
 }
 
+FileMeta *find_file(const char *filename) {
+    for (int i = 0; i < file_count; i++) {
+        if (strcmp(files[i].filename, filename) == 0) return &files[i];
+    }
+    return NULL;
+}
+
+void create_file_op(void) {
+    if (file_count >= MAX_FILES) { printf("File limit reached.\n"); return; }
+    char filename[100];
+    printf("Filename: ");
+    scanf("%99s", filename);
+
+    if (find_file(filename)) { printf("File already exists.\n"); return; }
+
+    char filepath[150];
+    snprintf(filepath, sizeof(filepath), "%s/%s", VAULT_DIR, filename);
+    FILE *f = fopen(filepath, "w");
+    if (!f) { printf("Error creating file.\n"); return; }
+    fclose(f);
+
+    strcpy(files[file_count].filename, filename);
+    strcpy(files[file_count].owner, current_user->username);
+    strcpy(files[file_count].group, current_user->group);
+    file_count++;
+    save_files();
+
+    printf("File '%s' created (owner=%s).\n", filename, current_user->username);
+}
+
+void write_file_op(void) {
+    char filename[100];
+    printf("Filename: ");
+    scanf("%99s", filename);
+    FileMeta *fm = find_file(filename);
+    if (!fm) { printf("File not found.\n"); return; }
+
+    char content[1000];
+    printf("Enter content to write (single line): ");
+    getchar();
+    fgets(content, sizeof(content), stdin);
+
+    char filepath[150];
+    snprintf(filepath, sizeof(filepath), "%s/%s", VAULT_DIR, filename);
+    FILE *f = fopen(filepath, "w");
+    fputs(content, f);
+    fclose(f);
+
+    printf("Content written to '%s'.\n", filename);
+}
+
+void read_file_op(void) {
+    char filename[100];
+    printf("Filename: ");
+    scanf("%99s", filename);
+    FileMeta *fm = find_file(filename);
+    if (!fm) { printf("File not found.\n"); return; }
+
+    char filepath[150];
+    snprintf(filepath, sizeof(filepath), "%s/%s", VAULT_DIR, filename);
+    FILE *f = fopen(filepath, "r");
+    if (!f) { printf("Error opening file.\n"); return; }
+
+    char line[1000];
+    printf("--- Contents of %s ---\n", filename);
+    while (fgets(line, sizeof(line), f)) printf("%s", line);
+    printf("--- End ---\n");
+    fclose(f);
+}
+
+void delete_file_op(void) {
+    char filename[100];
+    printf("Filename: ");
+    scanf("%99s", filename);
+    FileMeta *fm = find_file(filename);
+    if (!fm) { printf("File not found.\n"); return; }
+
+    char filepath[150];
+    snprintf(filepath, sizeof(filepath), "%s/%s", VAULT_DIR, filename);
+    remove(filepath);
+
+    int idx = fm - files;
+    for (int i = idx; i < file_count - 1; i++) files[i] = files[i + 1];
+    file_count--;
+    save_files();
+
+    printf("File '%s' deleted.\n", filename);
+}
+
+void list_files(void) {
+    printf("\n%-20s %-12s %-10s\n", "Filename", "Owner", "Group");
+    for (int i = 0; i < file_count; i++) {
+        printf("%-20s %-12s %-10s\n", files[i].filename, files[i].owner, files[i].group);
+    }
+    printf("\n");
+}
+
 int main(void) {
+    system("mkdir -p " VAULT_DIR);
     load_users();
+    load_files();
 
     printf("###############################################################\n");
     printf("# ST5004CEM Task 3 - Secure File Management System            #\n");
-    printf("# Stage 1: Authentication                                     #\n");
+    printf("# Stage 2: File Operations                                    #\n");
     printf("###############################################################\n");
 
     while (!current_user) {
@@ -121,7 +250,24 @@ int main(void) {
         else if (choice == 3) { printf("Goodbye.\n"); return 0; }
     }
 
-    printf("\nLogged in as %s. (File operations will be added in the next stage.)\n",
-           current_user->username);
+    int choice;
+    do {
+        printf("\n===== MENU (logged in as %s) =====\n", current_user->username);
+        printf("1. Create file\n2. Write to file\n3. Read file\n4. Delete file\n");
+        printf("5. List files\n0. Exit\n");
+        printf("Choice: ");
+        scanf("%d", &choice);
+
+        switch (choice) {
+            case 1: create_file_op(); break;
+            case 2: write_file_op(); break;
+            case 3: read_file_op(); break;
+            case 4: delete_file_op(); break;
+            case 5: list_files(); break;
+            case 0: printf("Logging out. Goodbye.\n"); break;
+            default: printf("Invalid choice.\n");
+        }
+    } while (choice != 0);
+
     return 0;
 }
