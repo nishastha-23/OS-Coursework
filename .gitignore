@@ -9,3 +9,4 @@ Task3/users.dat
 Task3/files.meta
 Task3/audit.log
 Task3/vault/*
+!Task3/vault/.gitkeep
