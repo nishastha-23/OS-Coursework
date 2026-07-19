@@ -1,5 +1,5 @@
 /* ST5004CEM - Task 3: Secure File Management System
- * Stage 2: File Create / Read / Write / Delete
+ * Stage 3: Permission System (Owner / Group / Others)
  *
  * Compile: gcc -o task3 task3.c
  * Run:     ./task3
@@ -23,6 +23,7 @@ typedef struct {
     char filename[100];
     char owner[50];
     char group[30];
+    char perms[10];   /* e.g. "rwxr-x---" : owner | group | others */
 } FileMeta;
 
 User users[MAX_USERS];
@@ -69,10 +70,11 @@ void load_files(void) {
     if (!f) return;
     file_count = 0;
     while (file_count < MAX_FILES &&
-           fscanf(f, "%99[^:]:%49[^:]:%29[^\n]\n",
+           fscanf(f, "%99[^:]:%49[^:]:%29[^:]:%9[^\n]\n",
                   files[file_count].filename,
                   files[file_count].owner,
-                  files[file_count].group) == 3) {
+                  files[file_count].group,
+                  files[file_count].perms) == 4) {
         file_count++;
     }
     fclose(f);
@@ -82,7 +84,8 @@ void save_files(void) {
     FILE *f = fopen("files.meta", "w");
     if (!f) return;
     for (int i = 0; i < file_count; i++) {
-        fprintf(f, "%s:%s:%s\n", files[i].filename, files[i].owner, files[i].group);
+        fprintf(f, "%s:%s:%s:%s\n", files[i].filename, files[i].owner,
+                files[i].group, files[i].perms);
     }
     fclose(f);
 }
@@ -134,6 +137,21 @@ int login_user(void) {
     return 0;
 }
 
+/* perms layout: index 0-2 = owner rwx, 3-5 = group rwx, 6-8 = others rwx */
+int check_permission(FileMeta *fm, char op) {
+    int offset;
+    if (strcmp(fm->owner, current_user->username) == 0) {
+        offset = 0;
+    } else if (strcmp(fm->group, current_user->group) == 0) {
+        offset = 3;
+    } else {
+        offset = 6;
+    }
+    int pos = (op == 'r') ? 0 : (op == 'w') ? 1 : 2;
+    char needed = op;
+    return fm->perms[offset + pos] == needed;
+}
+
 FileMeta *find_file(const char *filename) {
     for (int i = 0; i < file_count; i++) {
         if (strcmp(files[i].filename, filename) == 0) return &files[i];
@@ -143,11 +161,18 @@ FileMeta *find_file(const char *filename) {
 
 void create_file_op(void) {
     if (file_count >= MAX_FILES) { printf("File limit reached.\n"); return; }
-    char filename[100];
+    char filename[100], perms[10];
     printf("Filename: ");
     scanf("%99s", filename);
 
     if (find_file(filename)) { printf("File already exists.\n"); return; }
+
+    printf("Permissions (9 chars, e.g. rwxr-x---): ");
+    scanf("%9s", perms);
+    if (strlen(perms) != 9) {
+        printf("Invalid permission string, using default rwxr-----\n");
+        strcpy(perms, "rwxr-----");
+    }
 
     char filepath[150];
     snprintf(filepath, sizeof(filepath), "%s/%s", VAULT_DIR, filename);
@@ -158,10 +183,11 @@ void create_file_op(void) {
     strcpy(files[file_count].filename, filename);
     strcpy(files[file_count].owner, current_user->username);
     strcpy(files[file_count].group, current_user->group);
+    strcpy(files[file_count].perms, perms);
     file_count++;
     save_files();
 
-    printf("File '%s' created (owner=%s).\n", filename, current_user->username);
+    printf("File '%s' created (owner=%s, perms=%s).\n", filename, current_user->username, perms);
 }
 
 void write_file_op(void) {
@@ -170,6 +196,7 @@ void write_file_op(void) {
     scanf("%99s", filename);
     FileMeta *fm = find_file(filename);
     if (!fm) { printf("File not found.\n"); return; }
+    if (!check_permission(fm, 'w')) { printf("PERMISSION DENIED: no write access.\n"); return; }
 
     char content[1000];
     printf("Enter content to write (single line): ");
@@ -191,6 +218,7 @@ void read_file_op(void) {
     scanf("%99s", filename);
     FileMeta *fm = find_file(filename);
     if (!fm) { printf("File not found.\n"); return; }
+    if (!check_permission(fm, 'r')) { printf("PERMISSION DENIED: no read access.\n"); return; }
 
     char filepath[150];
     snprintf(filepath, sizeof(filepath), "%s/%s", VAULT_DIR, filename);
@@ -210,6 +238,7 @@ void delete_file_op(void) {
     scanf("%99s", filename);
     FileMeta *fm = find_file(filename);
     if (!fm) { printf("File not found.\n"); return; }
+    if (!check_permission(fm, 'w')) { printf("PERMISSION DENIED: only write-permitted users may delete.\n"); return; }
 
     char filepath[150];
     snprintf(filepath, sizeof(filepath), "%s/%s", VAULT_DIR, filename);
@@ -223,10 +252,29 @@ void delete_file_op(void) {
     printf("File '%s' deleted.\n", filename);
 }
 
+void chmod_file_op(void) {
+    char filename[100], perms[10];
+    printf("Filename: ");
+    scanf("%99s", filename);
+    FileMeta *fm = find_file(filename);
+    if (!fm) { printf("File not found.\n"); return; }
+    if (strcmp(fm->owner, current_user->username) != 0) {
+        printf("PERMISSION DENIED: only the owner can change permissions.\n");
+        return;
+    }
+    printf("New permissions (9 chars, e.g. rwxr-x---): ");
+    scanf("%9s", perms);
+    if (strlen(perms) != 9) { printf("Invalid format.\n"); return; }
+    strcpy(fm->perms, perms);
+    save_files();
+    printf("Permissions updated to '%s'.\n", perms);
+}
+
 void list_files(void) {
-    printf("\n%-20s %-12s %-10s\n", "Filename", "Owner", "Group");
+    printf("\n%-20s %-12s %-10s %-12s\n", "Filename", "Owner", "Group", "Permissions");
     for (int i = 0; i < file_count; i++) {
-        printf("%-20s %-12s %-10s\n", files[i].filename, files[i].owner, files[i].group);
+        printf("%-20s %-12s %-10s %-12s\n", files[i].filename, files[i].owner,
+               files[i].group, files[i].perms);
     }
     printf("\n");
 }
@@ -238,7 +286,7 @@ int main(void) {
 
     printf("###############################################################\n");
     printf("# ST5004CEM Task 3 - Secure File Management System            #\n");
-    printf("# Stage 2: File Operations                                    #\n");
+    printf("# Stage 3: Permission System                                  #\n");
     printf("###############################################################\n");
 
     while (!current_user) {
@@ -254,7 +302,7 @@ int main(void) {
     do {
         printf("\n===== MENU (logged in as %s) =====\n", current_user->username);
         printf("1. Create file\n2. Write to file\n3. Read file\n4. Delete file\n");
-        printf("5. List files\n0. Exit\n");
+        printf("5. Change permissions\n6. List files\n0. Exit\n");
         printf("Choice: ");
         scanf("%d", &choice);
 
@@ -263,7 +311,8 @@ int main(void) {
             case 2: write_file_op(); break;
             case 3: read_file_op(); break;
             case 4: delete_file_op(); break;
-            case 5: list_files(); break;
+            case 5: chmod_file_op(); break;
+            case 6: list_files(); break;
             case 0: printf("Logging out. Goodbye.\n"); break;
             default: printf("Invalid choice.\n");
         }
