@@ -1,5 +1,5 @@
-/* ST5004CEM - Task 3: Secure File Management System
- * Stage 4: Encryption / Decryption (XOR cipher)
+/* ST5004CEM - Task 3: Secure File Management System (COMPLETE)
+ * Authentication + File Ops + Permissions + Encryption + Audit Logging
  *
  * Compile: gcc -o task3 task3.c
  * Run:     ./task3
@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define MAX_USERS   20
 #define MAX_FILES   50
@@ -41,6 +42,20 @@ void hash_password(const char *password, char *out_hash) {
         hash = ((hash << 5) + hash) + (unsigned char)password[i];
     }
     sprintf(out_hash, "%lu", hash);
+}
+
+void audit_log(const char *action, const char *filename) {
+    FILE *f = fopen("audit.log", "a");
+    if (!f) return;
+    time_t now = time(NULL);
+    char timebuf[64];
+    strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M:%S", localtime(&now));
+    fprintf(f, "[%s] user=%s action=%s file=%s\n",
+            timebuf,
+            current_user ? current_user->username : "GUEST",
+            action,
+            filename ? filename : "-");
+    fclose(f);
 }
 
 void load_users(void) {
@@ -117,6 +132,7 @@ void register_user(void) {
     user_count++;
     save_users();
     printf("User '%s' registered successfully.\n", username);
+    audit_log("REGISTER", NULL);
 }
 
 int login_user(void) {
@@ -133,10 +149,12 @@ int login_user(void) {
             current_user = &users[i];
             printf("Login successful. Welcome, %s (group: %s)\n",
                    current_user->username, current_user->group);
+            audit_log("LOGIN_SUCCESS", NULL);
             return 1;
         }
     }
     printf("Invalid username or password.\n");
+    audit_log("LOGIN_FAILED", NULL);
     return 0;
 }
 
@@ -210,6 +228,7 @@ void create_file_op(void) {
     save_files();
 
     printf("File '%s' created (owner=%s, perms=%s).\n", filename, current_user->username, perms);
+    audit_log("CREATE", filename);
 }
 
 void write_file_op(void) {
@@ -218,7 +237,7 @@ void write_file_op(void) {
     scanf("%99s", filename);
     FileMeta *fm = find_file(filename);
     if (!fm) { printf("File not found.\n"); return; }
-    if (!check_permission(fm, 'w')) { printf("PERMISSION DENIED: no write access.\n"); return; }
+    if (!check_permission(fm, 'w')) { printf("PERMISSION DENIED: no write access.\n"); audit_log("WRITE_DENIED", filename); return; }
     if (fm->encrypted) { printf("File is encrypted. Decrypt it first before writing.\n"); return; }
 
     char content[1000];
@@ -233,6 +252,7 @@ void write_file_op(void) {
     fclose(f);
 
     printf("Content written to '%s'.\n", filename);
+    audit_log("WRITE", filename);
 }
 
 void read_file_op(void) {
@@ -241,7 +261,7 @@ void read_file_op(void) {
     scanf("%99s", filename);
     FileMeta *fm = find_file(filename);
     if (!fm) { printf("File not found.\n"); return; }
-    if (!check_permission(fm, 'r')) { printf("PERMISSION DENIED: no read access.\n"); return; }
+    if (!check_permission(fm, 'r')) { printf("PERMISSION DENIED: no read access.\n"); audit_log("READ_DENIED", filename); return; }
     if (fm->encrypted) { printf("File is encrypted. Decrypt it first to read plaintext.\n"); return; }
 
     char filepath[150];
@@ -254,6 +274,8 @@ void read_file_op(void) {
     while (fgets(line, sizeof(line), f)) printf("%s", line);
     printf("--- End ---\n");
     fclose(f);
+
+    audit_log("READ", filename);
 }
 
 void delete_file_op(void) {
@@ -262,7 +284,7 @@ void delete_file_op(void) {
     scanf("%99s", filename);
     FileMeta *fm = find_file(filename);
     if (!fm) { printf("File not found.\n"); return; }
-    if (!check_permission(fm, 'w')) { printf("PERMISSION DENIED: only write-permitted users may delete.\n"); return; }
+    if (!check_permission(fm, 'w')) { printf("PERMISSION DENIED: only write-permitted users may delete.\n"); audit_log("DELETE_DENIED", filename); return; }
 
     char filepath[150];
     snprintf(filepath, sizeof(filepath), "%s/%s", VAULT_DIR, filename);
@@ -274,6 +296,7 @@ void delete_file_op(void) {
     save_files();
 
     printf("File '%s' deleted.\n", filename);
+    audit_log("DELETE", filename);
 }
 
 void chmod_file_op(void) {
@@ -284,6 +307,7 @@ void chmod_file_op(void) {
     if (!fm) { printf("File not found.\n"); return; }
     if (strcmp(fm->owner, current_user->username) != 0) {
         printf("PERMISSION DENIED: only the owner can change permissions.\n");
+        audit_log("CHMOD_DENIED", filename);
         return;
     }
     printf("New permissions (9 chars, e.g. rwxr-x---): ");
@@ -292,6 +316,7 @@ void chmod_file_op(void) {
     strcpy(fm->perms, perms);
     save_files();
     printf("Permissions updated to '%s'.\n", perms);
+    audit_log("CHMOD", filename);
 }
 
 void encrypt_file_op(void) {
@@ -313,6 +338,7 @@ void encrypt_file_op(void) {
     save_files();
 
     printf("File '%s' encrypted.\n", filename);
+    audit_log("ENCRYPT", filename);
 }
 
 void decrypt_file_op(void) {
@@ -334,6 +360,16 @@ void decrypt_file_op(void) {
     save_files();
 
     printf("File '%s' decrypted (if the key was correct, it is now readable).\n", filename);
+    audit_log("DECRYPT", filename);
+}
+
+void view_audit_log(void) {
+    FILE *f = fopen("audit.log", "r");
+    if (!f) { printf("No audit log yet.\n"); return; }
+    char line[300];
+    printf("--- AUDIT LOG ---\n");
+    while (fgets(line, sizeof(line), f)) printf("%s", line);
+    fclose(f);
 }
 
 void list_files(void) {
@@ -353,7 +389,6 @@ int main(void) {
 
     printf("###############################################################\n");
     printf("# ST5004CEM Task 3 - Secure File Management System            #\n");
-    printf("# Stage 4: Encryption                                         #\n");
     printf("###############################################################\n");
 
     while (!current_user) {
@@ -369,7 +404,8 @@ int main(void) {
     do {
         printf("\n===== MENU (logged in as %s) =====\n", current_user->username);
         printf("1. Create file\n2. Write to file\n3. Read file\n4. Delete file\n");
-        printf("5. Change permissions\n6. Encrypt file\n7. Decrypt file\n8. List files\n0. Exit\n");
+        printf("5. Change permissions\n6. Encrypt file\n7. Decrypt file\n");
+        printf("8. List files\n9. View audit log\n0. Exit\n");
         printf("Choice: ");
         scanf("%d", &choice);
 
@@ -382,7 +418,8 @@ int main(void) {
             case 6: encrypt_file_op(); break;
             case 7: decrypt_file_op(); break;
             case 8: list_files(); break;
-            case 0: printf("Logging out. Goodbye.\n"); break;
+            case 9: view_audit_log(); break;
+            case 0: printf("Logging out. Goodbye.\n"); audit_log("LOGOUT", NULL); break;
             default: printf("Invalid choice.\n");
         }
     } while (choice != 0);
