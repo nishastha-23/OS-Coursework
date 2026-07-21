@@ -10,3 +10,5 @@ Task3/files.meta
 Task3/audit.log
 Task3/vault/*
 !Task3/vault/.gitkeep
+Task4/client
+Task4/server
