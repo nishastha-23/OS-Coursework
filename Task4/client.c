@@ -1,5 +1,5 @@
 /* ST5004CEM - Task 4: Network Programming and IPC
- * Stage 1: Basic TCP Client (connects, sends messages, gets echo back)
+ * Stage 3: Client for structured protocol (LOGIN / MSG / QUIT)
  *
  * Compile: gcc -o client client.c
  * Run:     ./client
@@ -39,7 +39,8 @@ int main(void) {
         exit(EXIT_FAILURE);
     }
     printf("Connected to server on port %d.\n", PORT);
-    printf("Type messages to send (type 'exit' to quit):\n");
+    printf("Commands: LOGIN <user> <pass> | MSG <text> | QUIT\n");
+    printf("(try LOGIN admin admin123)\n");
 
     while (1) {
         printf("> ");
@@ -47,18 +48,15 @@ int main(void) {
 
         send(sock_fd, buffer, strlen(buffer), 0);
 
-        if (strncmp(buffer, "exit", 4) == 0) {
-            printf("Closing connection.\n");
-            break;
-        }
-
         memset(buffer, 0, BUFFER_SIZE);
         int bytes_read = read(sock_fd, buffer, BUFFER_SIZE - 1);
         if (bytes_read <= 0) {
             printf("Server closed the connection.\n");
             break;
         }
-        printf("Server echoed: %s", buffer);
+        printf("%s", buffer);
+
+        if (strncmp(buffer, "OK: Goodbye", 11) == 0) break;
     }
 
     close(sock_fd);
